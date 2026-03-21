@@ -1,0 +1,33 @@
+{
+  "name": "buff-auto-list",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "网易Buff库存页商品自动上架工具",
+  "scripts": {
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox",
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox",
+    "zip": "wxt zip",
+    "zip:firefox": "wxt zip -b firefox",
+    "postinstall": "wxt prepare",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@wxt-dev/module-react": "^1.2.2",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "wxt": "^0.20.20",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "autoprefixer": "^10.4.27",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^5.9.3"
+  }
+}
