@@ -27,10 +27,13 @@ interface AppState {
   setProgress: (progress: ProcessProgress | null) => void;
   addGroupDetail: (detail: GroupDetail) => void;
   setGroupDetails: (details: GroupDetail[]) => void;
+  updateItemPrice: (groupGoodsId: string, itemAssetId: string, newPrice: number) => void;
+  updateGroupPrice: (groupGoodsId: string, newPrice: number) => void;
   toggleSelectedItem: (assetId: string) => void;
   setSelectedItems: (items: Set<string>) => void;
   setError: (error: string | null) => void;
   reset: () => void;
+  clearGroupDetails: () => void;
 }
 
 const initialState = {
@@ -81,6 +84,35 @@ export const useAppStore = create<AppState>()(
           groupDetails: [...state.groupDetails, detail],
         })),
       setGroupDetails: (groupDetails) => set({ groupDetails }),
+      updateItemPrice: (groupGoodsId, itemAssetId, newPrice) =>
+        set((state) => ({
+          groupDetails: state.groupDetails.map((detail) =>
+            detail.group.goodsId === groupGoodsId
+              ? {
+                  ...detail,
+                  items: detail.items.map((item) =>
+                    item.assetId === itemAssetId
+                      ? { ...item, suggestedPrice: newPrice }
+                      : item
+                  ),
+                }
+              : detail
+          ),
+        })),
+      updateGroupPrice: (groupGoodsId, newPrice) =>
+        set((state) => ({
+          groupDetails: state.groupDetails.map((detail) =>
+            detail.group.goodsId === groupGoodsId
+              ? {
+                  ...detail,
+                  items: detail.items.map((item) => ({
+                    ...item,
+                    suggestedPrice: newPrice,
+                  })),
+                }
+              : detail
+          ),
+        })),
       toggleSelectedItem: (assetId) =>
         set((state) => {
           const newSelected = new Set(state.selectedItems);
@@ -94,12 +126,15 @@ export const useAppStore = create<AppState>()(
       setSelectedItems: (selectedItems) => set({ selectedItems }),
       setError: (error) => set({ error }),
       reset: () => set(initialState),
+      clearGroupDetails: () => set({ groupDetails: [] }),
     }),
     {
       name: 'buff-auto-list-storage',
       storage: createJSONStorage(() => extensionStorage),
-      // 不持久化运行时状态
-      partialize: () => ({}),
+      // 持久化商品列表，但不持久化运行时状态
+      partialize: (state) => ({
+        groupDetails: state.groupDetails,
+      }),
     }
   )
 );
