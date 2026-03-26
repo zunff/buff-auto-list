@@ -367,6 +367,70 @@ body {
   white-space: nowrap;
 }
 
+/* 磨损区间分组 */
+.wear-range-group {
+  margin-bottom: 6px;
+}
+
+.wear-range-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.wear-range-header:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.wear-range-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wear-range-toggle {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  width: 12px;
+}
+
+.wear-range-label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.wear-range-count {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(102, 126, 234, 0.3);
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+.wear-range-pricing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wear-range-total {
+  font-size: 11px;
+  color: #34d399;
+  font-weight: 600;
+}
+
+.wear-range-items {
+  margin-top: 6px;
+  padding-left: 22px;
+  border-left: 1px dashed rgba(255, 255, 255, 0.2);
+  margin-left: 16px;
+}
+
 .item-row {
   display: flex;
   justify-content: space-between;
@@ -417,40 +481,60 @@ body {
   align-items: center;
   background: rgba(255, 255, 255, 0.1);
   border-radius: 6px;
-  padding: 4px 6px;
+  padding: 6px 8px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   transition: all 0.2s ease;
+  min-width: 90px;
 }
 
 .price-input-wrapper:focus-within {
   border-color: #667eea;
   background: rgba(102, 126, 234, 0.15);
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
 }
 
 .price-input-wrapper.compact {
-  padding: 3px 5px;
+  padding: 5px 7px;
+  min-width: 85px;
 }
 
 .currency {
-  font-size: 10px;
+  font-size: 12px;
   color: rgba(255, 255, 255, 0.5);
-  margin-right: 2px;
+  margin-right: 4px;
+  font-weight: 500;
 }
 
 .price-input {
-  width: 65px;
+  width: 70px;
   background: transparent;
   border: none;
   outline: none;
   color: #34d399;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   text-align: right;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+}
+
+.price-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+/* 移除 number 输入框的上下箭头 */
+.price-input::-webkit-outer-spin-button,
+.price-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.price-input[type=number] {
+  -moz-appearance: textfield;
 }
 
 .price-input-wrapper.compact .price-input {
-  font-size: 12px;
-  width: 60px;
+  font-size: 13px;
+  width: 65px;
 }
 
 /* === 按钮 === */
@@ -538,6 +622,23 @@ body {
 .btn-back:hover {
   color: rgba(255, 255, 255, 0.9);
   background: rgba(255, 255, 255, 0.1);
+}
+
+.btn-refresh {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.6);
+  border: none;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.btn-refresh:hover {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.1);
+  transform: rotate(180deg);
 }
 
 .btn-large {

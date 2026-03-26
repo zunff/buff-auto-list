@@ -5,10 +5,117 @@ import {
   GroupDetail,
   GroupInfo,
   ProcessProgress,
+  InventoryItem,
 } from '@/utils/message';
 import './App.css';
 
+// 价格输入组件
+function PriceInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [displayValue, setDisplayValue] = useState(value.toFixed(2));
+
+  useEffect(() => {
+    setDisplayValue(value.toFixed(2));
+  }, [value]);
+
+  return (
+    <div className="price-input-wrapper compact" onClick={(e) => e.stopPropagation()}>
+      <span className="currency">¥</span>
+      <input
+        type="text"
+        value={displayValue}
+        onChange={(e) => {
+          setDisplayValue(e.target.value);
+        }}
+        onBlur={() => {
+          const num = parseFloat(displayValue);
+          const finalValue = isNaN(num) || num < 0.01 ? 0.01 : Math.round(num * 100) / 100;
+          setDisplayValue(finalValue.toFixed(2));
+          onChange(finalValue);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+        className="price-input"
+      />
+    </div>
+  );
+}
+
+// 计算磨损区间
+function calculateWearRange(wear: number): { min: number; max: number } {
+  try {
+    if (wear <= 0 || isNaN(wear)) return { min: 0, max: 1 };
+
+    const wearStr = wear.toFixed(10);
+    const match = wearStr.match(/^0\.(0*)([1-9])(\d)/);
+    if (!match) return { min: 0, max: 1 };
+
+    const zeros = match[1];
+    const firstNonZero = parseInt(match[2]);
+    const nextDigit = parseInt(match[3] || '0');
+
+    const firstPos = zeros.length + 1;
+    const firstPrecision = Math.pow(10, -firstPos);
+    const baseValue = firstNonZero * firstPrecision;
+    const secondPrecision = firstPrecision / 10;
+
+    let min: number, max: number;
+    if (nextDigit <= 2) {
+      min = baseValue;
+      max = baseValue + 2 * secondPrecision;
+    } else if (nextDigit <= 5) {
+      min = baseValue + 2 * secondPrecision;
+      max = baseValue + 5 * secondPrecision;
+    } else {
+      min = baseValue + 5 * secondPrecision;
+      max = baseValue + 10 * secondPrecision;
+    }
+
+    const roundTo = (num: number, precision: number) => {
+      const factor = 1 / precision;
+      return Math.round(num * factor) / factor;
+    };
+
+    return { min: roundTo(min, secondPrecision), max: roundTo(max, secondPrecision) };
+  } catch (e) {
+    console.error('[Popup] calculateWearRange error:', e);
+    return { min: 0, max: 1 };
+  }
+}
+
+// 按磨损区间分组商品
+function groupByWearRange(items: InventoryItem[]): Map<string, InventoryItem[]> {
+  console.log('[Popup] groupByWearRange called with', items?.length, 'items');
+  const groups = new Map<string, InventoryItem[]>();
+
+  if (!items || !Array.isArray(items)) {
+    console.error('[Popup] groupByWearRange: invalid items', items);
+    return groups;
+  }
+
+  items.forEach((item) => {
+    try {
+      const wear = parseFloat(item.wear);
+      const range = calculateWearRange(wear);
+      const key = `${range.min}-${range.max}`;
+      if (!groups.has(key)) {
+        groups.set(key, []);
+      }
+      groups.get(key)!.push(item);
+    } catch (e) {
+      console.error('[Popup] groupByWearRange item error:', e, item);
+    }
+  });
+
+  console.log('[Popup] groupByWearRange result:', groups.size, 'groups');
+  return groups;
+}
+
 export default function App() {
+  console.log('[Popup] App rendering...');
+
   const {
     isProcessing,
     progress,
@@ -25,14 +132,19 @@ export default function App() {
     clearGroupDetails,
   } = useAppStore();
 
+  console.log('[Popup] groupDetails:', groupDetails?.length, groupDetails);
+
   const [activeTab, setActiveTab] = useState<boolean>(false);
   const [groupList, setGroupList] = useState<GroupInfo[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
+  const [expandedRanges, setExpandedRanges] = useState<Set<string>>(new Set());
 
   useEffect(() => {
+    console.log('[Popup] useEffect running, checking active tab...');
     browser.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
       const tab = tabs[0];
+      console.log('[Popup] Current tab:', tab?.url);
       if (tab?.url?.includes('buff.163.com')) {
         setActiveTab(true);
         if (tab.id) {
@@ -40,12 +152,13 @@ export default function App() {
             const result = await browser.tabs.sendMessage(tab.id, {
               type: MessageType.GET_ALL_GROUPS,
             });
+            console.log('[Popup] GET_ALL_GROUPS result:', result);
             if (result?.groups) {
               setGroupList(result.groups);
               setSelectedGroups(new Set(result.groups.map((g: GroupInfo) => g.assetId)));
             }
           } catch (e) {
-            console.error('Failed to get groups:', e);
+            console.error('[Popup] Failed to get groups:', e);
           } finally {
             setLoading(false);
           }
@@ -74,6 +187,13 @@ export default function App() {
           if (errorPayload?.error) {
             setError(errorPayload.error);
           }
+          break;
+        case MessageType.LISTING_PROGRESS:
+          setProgress(message.payload as ProcessProgress);
+          break;
+        case MessageType.LISTING_COMPLETE:
+          setIsProcessing(false);
+          setProgress(null);
           break;
       }
     };
@@ -133,6 +253,40 @@ export default function App() {
     }
   };
 
+  // 刷新商品组列表
+  const refreshGroups = async () => {
+    setLoading(true);
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      try {
+        const result = await browser.tabs.sendMessage(tab.id, {
+          type: MessageType.GET_ALL_GROUPS,
+        });
+        console.log('[Popup] Refresh groups result:', result);
+        if (result?.groups) {
+          setGroupList(result.groups);
+          setSelectedGroups(new Set(result.groups.map((g: GroupInfo) => g.assetId)));
+        }
+      } catch (e) {
+        console.error('[Popup] Failed to refresh groups:', e);
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  const toggleWearRange = (rangeKey: string) => {
+    setExpandedRanges(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(rangeKey)) {
+        newSet.delete(rangeKey);
+      } else {
+        newSet.add(rangeKey);
+      }
+      return newSet;
+    });
+  };
+
   const handleStop = async () => {
     const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) return;
@@ -141,9 +295,23 @@ export default function App() {
     setIsProcessing(false);
   };
 
-  const totalItems = groupDetails.reduce((sum, d) => sum + d.items.length, 0);
+  // 开始上架
+  const handleStartListing = async () => {
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return;
+
+    setIsProcessing(true);
+    setError(null);
+
+    await browser.tabs.sendMessage(tab.id, {
+      type: MessageType.START_LISTING,
+      payload: { groupDetails },
+    });
+  };
+
+  const totalItems = groupDetails.reduce((sum, d) => sum + (d.items?.length || 0), 0);
   const totalValue = groupDetails.reduce(
-    (sum, d) => sum + d.items.reduce((s, i) => s + i.suggestedPrice, 0),
+    (sum, d) => sum + (d.items || []).reduce((s, i) => s + (i.suggestedPrice || 0), 0),
     0
   );
 
@@ -221,6 +389,9 @@ export default function App() {
       {!isProcessing && groupDetails.length === 0 && !loading && groupList.length > 0 && (
         <div className="groups-section">
           <div className="section-header">
+            <button onClick={refreshGroups} className="btn-refresh" title="刷新">
+              🔄
+            </button>
             <h2>商品组列表</h2>
             <button onClick={toggleAll} className="btn-link">
               {selectedGroups.size === groupList.length ? '取消全选' : '全选'}
@@ -272,44 +443,76 @@ export default function App() {
           </div>
 
           <div className="items-list">
-            {groupDetails.map((detail) => (
-              <div key={detail.group.goodsId} className="item-group-card">
-                <div className="item-group-header">
-                  <span className="item-group-name">
-                    {detail.items[0]?.name || `商品组 ${detail.group.goodsId}`}
-                  </span>
-                  <span className="market-price">
-                    最低 ¥{detail.marketLowestPrice.toFixed(2)}
-                  </span>
-                </div>
-
-                {detail.items.map((item) => (
-                  <div key={item.assetId} className="item-row">
-                    <div className="item-details">
-                      <p className="item-name">{item.name}</p>
-                      <p className="item-wear">磨损: {item.wear}</p>
-                    </div>
-                    <div className="item-pricing">
-                      <div className="price-input-wrapper compact">
-                        <span className="currency">¥</span>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0.01"
-                          value={item.suggestedPrice.toFixed(2)}
-                          onChange={(e) => {
-                            const newPrice = Math.max(0.01, parseFloat(e.target.value) || 0.01);
-                            updateItemPrice(detail.group.goodsId, item.assetId, newPrice);
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                          className="price-input"
-                        />
-                      </div>
-                    </div>
+            {groupDetails.map((detail) => {
+              const wearGroups = groupByWearRange(detail.items);
+              return (
+                <div key={detail.group.goodsId} className="item-group-card">
+                  <div className="item-group-header">
+                    <span className="item-group-name">
+                      {detail.items[0]?.name || `商品组 ${detail.group.goodsId}`}
+                    </span>
+                    <span className="market-price">
+                      最低 ¥{(detail.marketLowestPrice || 0).toFixed(2)}
+                    </span>
                   </div>
-                ))}
-              </div>
-            ))}
+
+                  {Array.from(wearGroups.entries()).map(([rangeKey, items]) => {
+                    const isExpanded = expandedRanges.has(`${detail.group.goodsId}-${rangeKey}`);
+                    const firstItem = items[0];
+                    const groupTotalValue = items.reduce((sum, i) => sum + (i.suggestedPrice || 0), 0);
+
+                    return (
+                      <div key={rangeKey} className="wear-range-group">
+                        <div
+                          className="wear-range-header"
+                          onClick={() => toggleWearRange(`${detail.group.goodsId}-${rangeKey}`)}
+                        >
+                          <div className="wear-range-info">
+                            <span className="wear-range-toggle">{isExpanded ? '▼' : '▶'}</span>
+                            <span className="wear-range-label">
+                              磨损 {rangeKey}
+                            </span>
+                            <span className="wear-range-count">×{items.length}</span>
+                          </div>
+                          <div className="wear-range-pricing">
+                            <PriceInput
+                              value={firstItem?.suggestedPrice || 0.01}
+                              onChange={(newPrice) => {
+                                items.forEach(item => {
+                                  updateItemPrice(detail.group.goodsId, item.assetId, newPrice);
+                                });
+                              }}
+                            />
+                            <span className="wear-range-total">= ¥{groupTotalValue.toFixed(2)}</span>
+                          </div>
+                        </div>
+
+                        {isExpanded && (
+                          <div className="wear-range-items">
+                            {items.map((item) => (
+                              <div key={item.assetId} className="item-row">
+                                <div className="item-details">
+                                  <p className="item-name">{item.name}</p>
+                                  <p className="item-wear">磨损: {item.wear}</p>
+                                </div>
+                                <div className="item-pricing">
+                                  <PriceInput
+                                    value={item.suggestedPrice || 0.01}
+                                    onChange={(newPrice) => {
+                                      updateItemPrice(detail.group.goodsId, item.assetId, newPrice);
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -326,7 +529,7 @@ export default function App() {
                 {groupDetails.length > 0 ? '重新计算' : '开始计算'}
               </button>
               {groupDetails.length > 0 && (
-                <button className="btn-primary btn-compact">
+                <button onClick={handleStartListing} className="btn-primary btn-compact">
                   开始上架
                 </button>
               )}
