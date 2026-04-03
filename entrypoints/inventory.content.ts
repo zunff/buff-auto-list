@@ -512,7 +512,7 @@ export default defineContentScript({
     }
 
     /**
-     * 确保 URL 参数正确：state=cansell 和 fold=false
+     * 确保 URL 参数正确：state=cansell、fold=false、page_size=10000
      * Buff 使用 hash 参数（#后面的部分）
      */
     function ensureUrlParams(): void {
@@ -524,6 +524,7 @@ export default defineContentScript({
 
       console.log('[Inventory] state param:', params.get('state'));
       console.log('[Inventory] fold param:', params.get('fold'));
+      console.log('[Inventory] page_size param:', params.get('page_size'));
 
       let needRedirect = false;
 
@@ -543,6 +544,12 @@ export default defineContentScript({
         params.set('fold', 'false');
         needRedirect = true;
         console.log('[Inventory] Need to set fold=false');
+      }
+
+      if (params.get('page_size') !== '10000') {
+        params.set('page_size', '10000');
+        needRedirect = true;
+        console.log('[Inventory] Need to set page_size=10000');
       }
 
       if (needRedirect) {
