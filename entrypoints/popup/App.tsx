@@ -86,6 +86,7 @@ function calculateWearRange(wear: number): { min: number; max: number } {
 }
 
 // 按磨损区间分组商品
+// 特殊商品（无磨损）单独分组
 function groupByWearRange(items: InventoryItem[]): Map<string, InventoryItem[]> {
   console.log('[Popup] groupByWearRange called with', items?.length, 'items');
   const groups = new Map<string, InventoryItem[]>();
@@ -97,7 +98,27 @@ function groupByWearRange(items: InventoryItem[]): Map<string, InventoryItem[]> 
 
   items.forEach((item) => {
     try {
+      // 特殊商品（无磨损或磨损为空）统一放到"无磨损"组
+      if (item.isSpecial || !item.wear || item.wear === '') {
+        const key = 'special';
+        if (!groups.has(key)) {
+          groups.set(key, []);
+        }
+        groups.get(key)!.push(item);
+        return;
+      }
+
       const wear = parseFloat(item.wear);
+      if (isNaN(wear) || wear <= 0) {
+        // 磨损无效，也放到特殊组
+        const key = 'special';
+        if (!groups.has(key)) {
+          groups.set(key, []);
+        }
+        groups.get(key)!.push(item);
+        return;
+      }
+
       const range = calculateWearRange(wear);
       const key = `${range.min}-${range.max}`;
       if (!groups.has(key)) {
@@ -126,7 +147,6 @@ export default function App() {
     addGroupDetail,
     setGroupDetails,
     updateItemPrice,
-    updateGroupPrice,
     setError,
     reset,
     clearGroupDetails,
@@ -217,19 +237,12 @@ export default function App() {
       return;
     }
 
-    const groups = selectedGroupInfos.map(g => ({
-      assetId: g.assetId,
-      goodsId: g.goodsId,
-      classId: '',
-      instanceId: '',
-      contextId: '',
-      appId: '',
-    }));
-
+    // 发送完整的 GroupInfo 对象（包含 items 和 isSpecial）
+    console.log('[Popup] Sending groups:', JSON.stringify(selectedGroupInfos, null, 2));
     setIsProcessing(true);
     await browser.tabs.sendMessage(tab.id, {
       type: MessageType.START_PROCESS,
-      payload: { groups },
+      payload: { groups: selectedGroupInfos },
     });
   };
 
@@ -460,6 +473,7 @@ export default function App() {
                     const isExpanded = expandedRanges.has(`${detail.group.goodsId}-${rangeKey}`);
                     const firstItem = items[0];
                     const groupTotalValue = items.reduce((sum, i) => sum + (i.suggestedPrice || 0), 0);
+                    const isSpecialGroup = rangeKey === 'special';
 
                     return (
                       <div key={rangeKey} className="wear-range-group">
@@ -470,7 +484,7 @@ export default function App() {
                           <div className="wear-range-info">
                             <span className="wear-range-toggle">{isExpanded ? '▼' : '▶'}</span>
                             <span className="wear-range-label">
-                              磨损 {rangeKey}
+                              {isSpecialGroup ? '特殊商品' : `磨损 ${rangeKey}`}
                             </span>
                             <span className="wear-range-count">×{items.length}</span>
                           </div>
@@ -493,7 +507,20 @@ export default function App() {
                               <div key={item.assetId} className="item-row">
                                 <div className="item-details">
                                   <p className="item-name">{item.name}</p>
-                                  <p className="item-wear">磨损: {item.wear}</p>
+                                  {!isSpecialGroup && (
+                                    <p className="item-wear">磨损: {item.wear}</p>
+                                  )}
+                                  {/* 挂件展示 */}
+                                  {item.charms && item.charms.length > 0 && (
+                                    <div className="item-charms">
+                                      {item.charms.map((charm, idx) => (
+                                        <div key={idx} className="charm-badge">
+                                          <img src={charm.image} alt={charm.name} className="charm-image" />
+                                          <span className="charm-price">+¥{(charm.price * 0.7).toFixed(2)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
                                 <div className="item-pricing">
                                   <PriceInput

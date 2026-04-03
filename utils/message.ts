@@ -36,6 +36,8 @@ export interface GroupInfo {
   image: string; // 图片 URL
   count: number; // 组内饰品件数
   assetId: string; // li 的 data-assetid（用于处理）
+  items?: InventoryItem[]; // 该组内的所有商品（新增，用于fold=false时按名称分组）
+  isSpecial?: boolean; // 是否特殊商品（音乐盒、印花、涂鸦等）
 }
 
 // 商品组（库存页面显示的合并项）
@@ -48,12 +50,22 @@ export interface InventoryGroup {
   appId: string;
 }
 
+// 挂件信息
+export interface Charm {
+  name: string; // 挂件名称
+  image: string; // 挂件图片 URL
+  price: number; // 挂件价格
+}
+
 // 单个商品（展开后的具体物品）
 export interface InventoryItem {
   assetId: string; // tr 的 id 去掉 "asset_" 前缀
   goodsId: string; // tr 的 class 中的 goods_id_xxx
   name: string; // .textOne 的文本
   wear: string; // .paint-wear 的文本
+  image?: string; // 图片 URL（新增）
+  isSpecial?: boolean; // 是否特殊商品（新增）
+  charms?: Charm[]; // 挂件列表（新增）
   quickPrice: number; // data-quick-price
   price: number; // .f_Strong 的价格
   suggestedPrice: number; // 计算后的建议价格（最低价-0.01）

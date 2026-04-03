@@ -38,6 +38,7 @@ export default defineContentScript({
           break;
 
         case MessageType.START_PROCESS:
+          console.log('[Inventory] START_PROCESS payload:', JSON.stringify(message.payload?.groups, null, 2));
           startProcess(message.payload?.groups || []);
           sendResponse({ success: true });
           break;
@@ -64,62 +65,110 @@ export default defineContentScript({
     // ==================== 获取所有商品组 ====================
 
     /**
-     * 获取页面上所有的商品组信息
+     * 解析挂件信息
+     */
+    function parseCharms(li: HTMLElement): import('@/utils/message').Charm[] {
+      const charms: import('@/utils/message').Charm[] = [];
+      const charmElements = li.querySelectorAll('.icon_charm');
+
+      charmElements.forEach((el) => {
+        const name = el.getAttribute('data-title') || '';
+        const imgEl = el.querySelector('img');
+        const image = imgEl?.src || '';
+        // 解析价格：data-sell-reference-price="¥ 1.19"
+        const priceText = el.getAttribute('data-sell-reference-price') || '';
+        const priceMatch = priceText.match(/[\d.]+/);
+        const price = priceMatch ? parseFloat(priceMatch[0]) : 0;
+
+        if (name && image) {
+          charms.push({ name, image, price });
+        }
+      });
+
+      return charms;
+    }
+
+    /**
+     * 获取页面上所有的商品组信息（fold=false 时按商品名称分组）
+     * 解析展开的商品列表，按名称分组返回
      */
     function getAllGroups(): GroupInfo[] {
-      const groups: GroupInfo[] = [];
-
       console.log('[Inventory] getAllGroups called');
       console.log('[Inventory] Current URL:', window.location.href);
       console.log('[Inventory] Document ready state:', document.readyState);
 
+      // fold=false 时，每个商品独立显示为一个 li
       const items = document.querySelectorAll('li.my_inventory.salable');
       console.log(`[Inventory] Found ${items.length} li.my_inventory.salable elements`);
 
-      // 如果没找到，尝试其他选择器
-      if (items.length === 0) {
-        console.log('[Inventory] Trying alternative selectors...');
-        const altItems = document.querySelectorAll('li.my_inventory');
-        console.log(`[Inventory] Found ${altItems.length} li.my_inventory elements`);
-
-        const cardFolders = document.querySelectorAll('.card_folder');
-        console.log(`[Inventory] Found ${cardFolders.length} .card_folder elements`);
-
-        // 打印页面结构帮助调试
-        const allLi = document.querySelectorAll('li');
-        console.log(`[Inventory] Total li elements on page: ${allLi.length}`);
-      }
+      // 按商品名称分组
+      const nameGroups = new Map<string, InventoryItem[]>();
 
       items.forEach((li, index) => {
         const anchor = li.querySelector('a[data-goods_id]');
         const img = li.querySelector('img');
         const nameLink = li.querySelector('h3 a');
-        const countSpan = li.querySelector('.fold_asset_count');
+        const wearEl = li.querySelector('.wear-value');
 
-        console.log(`[Inventory] Item ${index}: anchor=${!!anchor}, img=${!!img}, nameLink=${!!nameLink}`);
-
-        if (!anchor) return;
+        if (!anchor) {
+          console.log(`[Inventory] Item ${index}: no anchor, skipping`);
+          return;
+        }
 
         const goodsId = anchor.getAttribute('data-goods_id') || '';
-        const assetId = li.getAttribute('data-assetid') || '';
+        const assetId = li.getAttribute('data-assetid') || li.id || '';
         const name = nameLink?.textContent?.trim() || '';
         const image = img?.src || '';
-        const count = parseInt(countSpan?.getAttribute('data-fold_asset_count') || '0', 10);
+        // 磨损值：去掉 "磨损: " 前缀
+        let wear = '';
+        if (wearEl?.textContent) {
+          wear = wearEl.textContent.replace('磨损: ', '').trim();
+        }
 
-        console.log(`[Inventory] Item ${index}: goodsId=${goodsId}, assetId=${assetId}, name=${name}`);
+        const isSpecial = isSpecialGoods(name);
 
-        if (goodsId && assetId) {
-          groups.push({
+        // 解析挂件信息
+        const charms = parseCharms(li as HTMLElement);
+
+        console.log(`[Inventory] Item ${index}: goodsId=${goodsId}, assetId=${assetId}, name=${name}, wear=${wear}, isSpecial=${isSpecial}, charms=${charms.length}`);
+
+        if (goodsId && assetId && name) {
+          const item: InventoryItem = {
+            assetId,
             goodsId,
             name,
+            wear,
             image,
-            count,
-            assetId,
-          });
+            isSpecial,
+            charms: charms.length > 0 ? charms : undefined,
+            quickPrice: 0,
+            price: 0,
+            suggestedPrice: 0,
+          };
+
+          if (!nameGroups.has(name)) {
+            nameGroups.set(name, []);
+          }
+          nameGroups.get(name)!.push(item);
         }
       });
 
-      console.log(`[Inventory] Found ${groups.length} groups total`);
+      // 转换为 GroupInfo 数组
+      const groups: GroupInfo[] = [];
+      nameGroups.forEach((items, name) => {
+        const firstItem = items[0];
+        groups.push({
+          goodsId: firstItem.goodsId,
+          name,
+          image: firstItem.image || '',
+          count: items.length,
+          assetId: firstItem.assetId, // 使用第一个商品的 assetId 作为组标识
+          items,
+          isSpecial: firstItem.isSpecial,
+        });
+      });
+
+      console.log(`[Inventory] Found ${groups.length} groups, ${items.length} items total`);
       return groups;
     }
 
@@ -163,8 +212,9 @@ export default defineContentScript({
 
     /**
      * 开始处理选中的商品组
+     * 接收 GroupInfo[]（每个包含 items 数组）
      */
-    async function startProcess(groups: InventoryGroup[]) {
+    async function startProcess(groups: GroupInfo[]) {
       if (isProcessing) {
         console.log('[Inventory] Already processing');
         return;
@@ -176,7 +226,7 @@ export default defineContentScript({
       const progress: ProcessProgress = {
         total: groups.length,
         current: 0,
-        status: 'selecting',
+        status: 'fetching_price',
       };
 
       console.log(`[Inventory] Starting process for ${groups.length} groups`);
@@ -189,7 +239,6 @@ export default defineContentScript({
 
         const group = groups[i];
         progress.current = i + 1;
-        progress.currentGroup = group;
 
         try {
           // 处理单个商品组
@@ -206,15 +255,15 @@ export default defineContentScript({
           browser.runtime.sendMessage({
             type: MessageType.PROCESS_ERROR,
             payload: {
-              group,
+              group: { assetId: group.assetId, goodsId: group.goodsId },
               error: error instanceof Error ? error.message : String(error),
             },
           });
         }
 
-        // 组间延迟，确保页面状态稳定
+        // 组间延迟
         if (!shouldStop && i < groups.length - 1) {
-          await sleep(1000);
+          await sleep(500);
         }
       }
 
@@ -231,144 +280,128 @@ export default defineContentScript({
 
     /**
      * 处理单个商品组
+     * 直接使用 GroupInfo 中的 items 数据获取价格
      */
     async function processGroup(
-      group: InventoryGroup,
+      group: GroupInfo,
       progress: ProcessProgress
     ): Promise<GroupDetail | null> {
-      console.log(`[Inventory] Processing group: ${group.goodsId}`);
+      console.log(`[Inventory] Processing group: ${group.name}, isSpecial: ${group.isSpecial}`);
 
-      // 确保之前的弹窗已关闭，并取消所有已选中的商品组
-      await ensurePopupClosed();
-
-      // 1. 点击商品组（选中状态）
-      progress.status = 'selecting';
-      sendProgress(progress);
-
-      const groupElement = document.querySelector(
-        `li.my_inventory[data-assetid="${group.assetId}"]`
-      );
-      if (!groupElement) {
-        throw new Error(`找不到商品组元素: ${group.assetId}`);
+      const items = group.items || [];
+      if (items.length === 0) {
+        console.warn(`[Inventory] No items in group ${group.name}`);
+        return null;
       }
 
-      // 滚动到元素可见位置
-      groupElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await sleep(400);
-
-      // 确保商品组处于未选中状态，然后再点击选中
-      if (groupElement.classList.contains('on')) {
-        console.log('[Inventory] Group already selected, deselecting first');
-        (groupElement as HTMLElement).click();
-        await sleep(300);
-      }
-
-      // 点击选中商品组
-      (groupElement as HTMLElement).click();
-      await sleep(500);
-
-      // 验证选中状态
-      if (!groupElement.classList.contains('on')) {
-        console.warn('[Inventory] Group not selected, clicking again');
-        (groupElement as HTMLElement).click();
-        await sleep(300);
-      }
-
-      // 3. 点击上架按钮
-      const shelveBtn = document.querySelector('#shelve.i_Btn');
-      if (!shelveBtn) {
-        throw new Error('找不到上架按钮');
-      }
-      (shelveBtn as HTMLElement).click();
-      console.log('[Inventory] Clicked shelve button');
-
-      // 4. 等待弹窗出现
-      await waitForElement('.popup', 5000);
-      await sleep(800); // 增加等待时间确保弹窗内容加载完成
-
-      // 5. 取消合并相同项
-      progress.status = 'parsing';
-      sendProgress(progress);
-
-      await uncheckCombine();
-      await sleep(500);
-
-      // 6. 解析商品列表
-      const items = parseItemsList(group.goodsId);
-      console.log(`[Inventory] Parsed ${items.length} items from group`);
-
-      // 7. 关闭弹窗
-      closePopup();
-      await waitForPopupClose(); // 等待弹窗完全关闭
-
-      // 8. 获取市场价格（通过 background）
       progress.status = 'fetching_price';
       sendProgress(progress);
 
-      // 计算每个商品的磨损区间
-      const wearRanges = new Map<string, WearRange>();
-      items.forEach((item) => {
-        const wearValue = parseFloat(item.wear);
-        if (!isNaN(wearValue) && wearValue > 0) {
-          const range = calculateWearRange(wearValue);
-          const key = `${range.min}-${range.max}`;
-          if (!wearRanges.has(key)) {
-            wearRanges.set(key, range);
+      let marketLowestPrice = 0;
+
+      if (group.isSpecial) {
+        // 特殊商品：直接获取最低价，所有商品使用相同价格
+        console.log(`[Inventory] Special goods, fetching lowest price only`);
+        marketLowestPrice = await fetchMarketPrice(group.goodsId);
+        const suggestedPrice = Math.max(0.01, marketLowestPrice - 0.01);
+
+        items.forEach((item) => {
+          // 基础价格
+          let basePrice = suggestedPrice;
+          // 加上挂件价格的 70%
+          if (item.charms && item.charms.length > 0) {
+            const charmBonus = item.charms.reduce((sum, c) => sum + c.price * 0.7, 0);
+            basePrice = Math.max(0.01, basePrice + charmBonus);
+            console.log(`[Inventory] ${item.name} | 特殊商品 + 挂件加价 ¥${charmBonus.toFixed(2)} => 建议价: ¥${basePrice.toFixed(2)}`);
+          } else {
+            console.log(`[Inventory] ${item.name} | 特殊商品 => 建议价: ¥${basePrice.toFixed(2)}`);
           }
-        }
-      });
+          item.suggestedPrice = Math.round(basePrice * 100) / 100;
+        });
+      } else {
+        // 普通商品：按磨损区间获取价格
+        const wearRanges = new Map<string, WearRange>();
+        items.forEach((item) => {
+          const wearValue = parseFloat(item.wear);
+          if (!isNaN(wearValue) && wearValue > 0) {
+            const range = calculateWearRange(wearValue);
+            const key = `${range.min}-${range.max}`;
+            if (!wearRanges.has(key)) {
+              wearRanges.set(key, range);
+            }
+          }
+        });
 
-      console.log(`[Inventory] Calculated ${wearRanges.size} wear ranges`);
+        console.log(`[Inventory] Calculated ${wearRanges.size} wear ranges`);
 
-      // 批量获取磨损区间的价格
-      const wearPriceRequests: WearPriceRequest[] = Array.from(wearRanges.values()).map((range) => ({
+        // 批量获取磨损区间的价格
+        const wearPriceRequests: WearPriceRequest[] = Array.from(wearRanges.values()).map((range) => ({
+          goodsId: group.goodsId,
+          wearRange: range,
+        }));
+
+        const wearPrices = await fetchWearPrices(wearPriceRequests);
+        console.log(`[Inventory] Got ${wearPrices.length} wear prices`);
+
+        // 打印磨损区间和对应的价格
+        console.log('[Inventory] ========== 磨损区间价格 ==========');
+        wearPrices.forEach((wp) => {
+          console.log(`[Inventory] 区间 [${wp.wearRange.min}, ${wp.wearRange.max}] => 市场最低价: ¥${wp.price.toFixed(2)} => 建议价: ¥${Math.max(0.01, wp.price - 0.01).toFixed(2)}`);
+        });
+        console.log('[Inventory] ==============================');
+
+        // 构建磨损区间到价格的映射
+        const priceMap = new Map<string, number>();
+        let defaultPrice = 0.01;
+        wearPrices.forEach((wp) => {
+          const key = `${wp.wearRange.min}-${wp.wearRange.max}`;
+          priceMap.set(key, Math.max(0.01, wp.price - 0.01));
+          if (wp.price > 0 && defaultPrice === 0.01) {
+            defaultPrice = Math.max(0.01, wp.price - 0.01);
+          }
+        });
+
+        // 设置建议价格
+        console.log('[Inventory] ========== 商品价格分配 ==========');
+        items.forEach((item) => {
+          const wearValue = parseFloat(item.wear);
+          // 基础价格
+          let basePrice = defaultPrice;
+          if (!isNaN(wearValue) && wearValue > 0) {
+            const range = calculateWearRange(wearValue);
+            const key = `${range.min}-${range.max}`;
+            basePrice = priceMap.get(key) || defaultPrice;
+          }
+
+          // 加上挂件价格的 70%
+          if (item.charms && item.charms.length > 0) {
+            const charmBonus = item.charms.reduce((sum, c) => sum + c.price * 0.7, 0);
+            basePrice = Math.max(0.01, basePrice + charmBonus);
+            const charmNames = item.charms.map(c => c.name).join(', ');
+            console.log(`[Inventory] ${item.name} | 磨损: ${item.wear} | 挂件: ${charmNames} +¥${charmBonus.toFixed(2)} => 建议价: ¥${basePrice.toFixed(2)}`);
+          } else {
+            console.log(`[Inventory] ${item.name} | 磨损: ${item.wear} => 建议价: ¥${basePrice.toFixed(2)}`);
+          }
+          item.suggestedPrice = Math.round(basePrice * 100) / 100;
+        });
+        console.log('[Inventory] ===============================');
+
+        // 计算市场最低价
+        marketLowestPrice = Math.min(...wearPrices.map(wp => wp.price).filter(p => p > 0)) || 0;
+      }
+
+      // 构建 InventoryGroup 用于返回
+      const inventoryGroup: InventoryGroup = {
+        assetId: group.assetId,
         goodsId: group.goodsId,
-        wearRange: range,
-      }));
-
-      const wearPrices = await fetchWearPrices(wearPriceRequests);
-      console.log(`[Inventory] Got ${wearPrices.length} wear prices`);
-
-      // 打印磨损区间和对应的价格
-      console.log('[Inventory] ========== 磨损区间价格 ==========');
-      wearPrices.forEach((wp) => {
-        console.log(`[Inventory] 区间 [${wp.wearRange.min}, ${wp.wearRange.max}] => 市场最低价: ¥${wp.price.toFixed(2)} => 建议价: ¥${Math.max(0.01, wp.price - 0.01).toFixed(2)}`);
-      });
-      console.log('[Inventory] ==============================');
-
-      // 构建磨损区间到价格的映射
-      const priceMap = new Map<string, number>();
-      let defaultPrice = 0.01;
-      wearPrices.forEach((wp) => {
-        const key = `${wp.wearRange.min}-${wp.wearRange.max}`;
-        priceMap.set(key, Math.max(0.01, wp.price - 0.01));
-        // 取第一个非零价格作为默认价格
-        if (wp.price > 0 && defaultPrice === 0.01) {
-          defaultPrice = Math.max(0.01, wp.price - 0.01);
-        }
-      });
-
-      // 设置建议价格
-      console.log('[Inventory] ========== 商品价格分配 ==========');
-      items.forEach((item) => {
-        const wearValue = parseFloat(item.wear);
-        if (!isNaN(wearValue) && wearValue > 0) {
-          const range = calculateWearRange(wearValue);
-          const key = `${range.min}-${range.max}`;
-          item.suggestedPrice = priceMap.get(key) || defaultPrice;
-          console.log(`[Inventory] ${item.name} | 磨损: ${item.wear} | 区间: [${range.min}, ${range.max}] => 建议价: ¥${item.suggestedPrice.toFixed(2)}`);
-        } else {
-          item.suggestedPrice = defaultPrice;
-          console.log(`[Inventory] ${item.name} | 磨损无效，使用默认价: ¥${defaultPrice.toFixed(2)}`);
-        }
-      });
-      console.log('[Inventory] ===============================');
-
-      // 计算市场最低价（取所有区间最低价的最小值）
-      const marketLowestPrice = Math.min(...wearPrices.map(wp => wp.price).filter(p => p > 0)) || 0;
+        classId: '',
+        instanceId: '',
+        contextId: '',
+        appId: '',
+      };
 
       return {
-        group,
+        group: inventoryGroup,
         items,
         marketLowestPrice,
       };
@@ -448,7 +481,16 @@ export default defineContentScript({
     // ==================== 辅助函数 ====================
 
     /**
-     * 确保 URL 参数正确：state=cansell 和 fold=true
+     * 判断是否为特殊商品（音乐盒、印花、封装的涂鸦）
+     * 这些商品没有磨损值，价格获取逻辑不同
+     */
+    function isSpecialGoods(name: string): boolean {
+      // 音乐盒 |、印花 |、封装的涂鸦 |（注意有空格和|）
+      return /^(音乐盒 |印花 |封装的涂鸦 )/.test(name);
+    }
+
+    /**
+     * 确保 URL 参数正确：state=cansell 和 fold=false
      * Buff 使用 hash 参数（#后面的部分）
      */
     function ensureUrlParams(): void {
@@ -475,10 +517,10 @@ export default defineContentScript({
         console.log('[Inventory] Need to set state=cansell');
       }
 
-      if (params.get('fold') !== 'true') {
-        params.set('fold', 'true');
+      if (params.get('fold') !== 'false') {
+        params.set('fold', 'false');
         needRedirect = true;
-        console.log('[Inventory] Need to set fold=true');
+        console.log('[Inventory] Need to set fold=false');
       }
 
       if (needRedirect) {
@@ -489,93 +531,6 @@ export default defineContentScript({
       } else {
         console.log('[Inventory] URL params already correct');
       }
-    }
-
-    /**
-     * 取消弹窗里的合并相同项
-     * span[value="combine"] 有 .on class 时需要点击取消
-     * 使用轮询确保成功
-     */
-    async function uncheckCombine(timeout = 10000): Promise<void> {
-      console.log('[Inventory] Waiting to uncheck combine option...');
-      const startTime = Date.now();
-
-      // 先等待合并选项出现
-      while (Date.now() - startTime < timeout) {
-        // 检查弹窗内的合并选项（无论是否选中）
-        const combineSpan = document.querySelector('span[value="combine"]');
-        if (combineSpan) {
-          // 找到了合并选项，检查是否选中
-          const checkbox = document.querySelector('span[value="combine"].on');
-          if (checkbox) {
-            // 已选中，需要点击取消
-            (checkbox as HTMLElement).click();
-            console.log('[Inventory] Clicked combine checkbox to uncheck');
-            await sleep(500);
-
-            // 检查是否成功取消
-            const stillOn = document.querySelector('span[value="combine"].on');
-            if (!stillOn) {
-              console.log('[Inventory] Successfully unchecked combine option');
-              return;
-            }
-            // 如果还选中，继续尝试
-          } else {
-            // 合并选项存在但未选中
-            console.log('[Inventory] Combine option already unchecked');
-            return;
-          }
-        } else {
-          // 合并选项还没出现，继续等待
-          console.log('[Inventory] Waiting for combine option to appear...');
-        }
-        await sleep(200);
-      }
-
-      // 超时但不是致命错误，只是警告
-      console.warn('[Inventory] Timeout waiting for combine option, continuing anyway');
-    }
-
-    /**
-     * 解析商品列表
-     * 验证解析的物品数量与弹窗标题显示的数量是否一致
-     */
-    function parseItemsList(goodsId: string): InventoryItem[] {
-      const items: InventoryItem[] = [];
-      const rows = document.querySelectorAll('tr.assets-item');
-
-      // 获取弹窗标题中显示的物品数量
-      const countSpan = document.querySelector('.popup .count em');
-      const expectedCount = countSpan ? parseInt(countSpan.textContent || '0', 10) : 0;
-      console.log(`[Inventory] Expected item count from popup: ${expectedCount}`);
-
-      rows.forEach((tr) => {
-        const assetId = tr.id.replace('asset_', '');
-        const nameEl = tr.querySelector('.textOne');
-        const wearEl = tr.querySelector('.paint-wear');
-        const priceEl = tr.querySelector('.f_Strong');
-
-        const item: InventoryItem = {
-          assetId,
-          goodsId,
-          name: nameEl?.textContent?.trim() || '',
-          wear: wearEl?.textContent?.replace('磨损: ', '').trim() || '',
-          quickPrice: parseFloat(tr.getAttribute('data-quick-price') || '0'),
-          price: parsePrice(priceEl?.textContent || '0'),
-          suggestedPrice: 0,
-        };
-
-        if (item.assetId && item.name) {
-          items.push(item);
-        }
-      });
-
-      // 验证物品数量
-      if (expectedCount > 0 && items.length !== expectedCount) {
-        console.warn(`[Inventory] Item count mismatch! Expected: ${expectedCount}, Got: ${items.length}`);
-      }
-
-      return items;
     }
 
     /**
@@ -651,41 +606,6 @@ export default defineContentScript({
     }
 
     /**
-     * 等待弹窗完全关闭
-     */
-    async function waitForPopupClose(timeout = 5000): Promise<void> {
-      const startTime = Date.now();
-      let forceCloseAttempts = 0;
-
-      while (Date.now() - startTime < timeout) {
-        const popup = document.querySelector('.popup');
-        if (!popup || !popup.isConnected) {
-          console.log('[Inventory] Popup closed');
-          return;
-        }
-
-        // 如果弹窗还在，尝试关闭
-        if (Date.now() - startTime > 1000 && forceCloseAttempts < 3) {
-          closePopup();
-          forceCloseAttempts++;
-          console.log(`[Inventory] Force closing popup (attempt ${forceCloseAttempts})`);
-        }
-
-        await sleep(100);
-      }
-
-      // 最终尝试：移除弹窗 DOM
-      const popup = document.querySelector('.popup');
-      if (popup && popup.isConnected) {
-        console.warn('[Inventory] Popup close timeout, removing DOM');
-        popup.remove();
-        // 移除遮罩层
-        const mask = document.querySelector('.w-popui-bg');
-        if (mask) mask.remove();
-      }
-    }
-
-    /**
      * 获取市场价格（通过 background 发起请求）
      */
     async function fetchMarketPrice(goodsId: string): Promise<number> {
@@ -734,17 +654,6 @@ export default defineContentScript({
         console.error('[Inventory] Failed to fetch wear prices:', error);
         return [];
       }
-    }
-
-    /**
-     * 解析价格字符串
-     */
-    function parsePrice(priceText: string | null): number {
-      if (!priceText) return 0;
-      // 移除货币符号和其他非数字字符
-      const cleaned = priceText.replace(/[^\d.]/g, '');
-      const price = parseFloat(cleaned);
-      return isNaN(price) ? 0 : Math.abs(price);
     }
 
     /**
@@ -860,25 +769,36 @@ export default defineContentScript({
 
     /**
      * 上架单个商品组
+     * 新逻辑：自动选中所有同名商品，不需要取消合并相同项
      */
     async function listGroup(detail: GroupDetail) {
-      console.log(`[Inventory] Listing group: ${detail.group.goodsId}`);
+      console.log(`[Inventory] Listing group: ${detail.items[0]?.name}, ${detail.items.length} items`);
 
-      // 确保之前的弹窗已关闭
+      // 1. 确保之前的弹窗已关闭，取消所有已选中商品
       await ensurePopupClosed();
 
-      // 2. 点击选中商品组
-      const groupElement = document.querySelector(
-        `li.my_inventory[data-assetid="${detail.group.assetId}"]`
+      // 2. 自动选中所有同名商品
+      // 滚动到第一个商品位置
+      const firstItem = detail.items[0];
+      const firstElement = document.querySelector(
+        `li.my_inventory[data-assetid="${firstItem.assetId}"]`
       );
-      if (!groupElement) {
-        throw new Error(`找不到商品组元素: ${detail.group.assetId}`);
+      if (firstElement) {
+        firstElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        await sleep(400);
       }
 
-      groupElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await sleep(400);
-      (groupElement as HTMLElement).click();
-      await sleep(500);
+      // 选中所有同名商品
+      for (const item of detail.items) {
+        const itemElement = document.querySelector(
+          `li.my_inventory[data-assetid="${item.assetId}"]`
+        );
+        if (itemElement && !itemElement.classList.contains('on')) {
+          (itemElement as HTMLElement).click();
+          await sleep(100); // 短暂延迟
+        }
+      }
+      await sleep(300);
 
       // 3. 点击上架按钮
       const shelveBtn = document.querySelector('#shelve.i_Btn');
@@ -892,9 +812,8 @@ export default defineContentScript({
       await waitForElement('.popup', 5000);
       await sleep(1000); // 增加等待时间确保弹窗内容加载完成
 
-      // 5. 取消合并相同项
-      await uncheckCombine();
-      await sleep(500);
+      // 5. 注意：fold=false 时，不需要取消"合并相同项"
+      // 因为商品本身就是展开的
 
       // 6. 填写价格
       await fillPrices(detail.items);
@@ -913,7 +832,7 @@ export default defineContentScript({
         console.warn('[Inventory] Confirm button not found');
       }
 
-      console.log(`[Inventory] Listed ${detail.items.length} items for group ${detail.group.goodsId}`);
+      console.log(`[Inventory] Listed ${detail.items.length} items`);
     }
 
     /**
