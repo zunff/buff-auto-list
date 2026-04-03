@@ -303,21 +303,30 @@ export default defineContentScript({
         // 特殊商品：直接获取最低价，所有商品使用相同价格
         console.log(`[Inventory] Special goods, fetching lowest price only`);
         marketLowestPrice = await fetchMarketPrice(group.goodsId);
-        const suggestedPrice = Math.max(0.01, marketLowestPrice - 0.01);
 
-        items.forEach((item) => {
-          // 基础价格
-          let basePrice = suggestedPrice;
-          // 加上挂件价格的 70%
-          if (item.charms && item.charms.length > 0) {
-            const charmBonus = item.charms.reduce((sum, c) => sum + c.price * 0.7, 0);
-            basePrice = Math.max(0.01, basePrice + charmBonus);
-            console.log(`[Inventory] ${item.name} | 特殊商品 + 挂件加价 ¥${charmBonus.toFixed(2)} => 建议价: ¥${basePrice.toFixed(2)}`);
-          } else {
-            console.log(`[Inventory] ${item.name} | 特殊商品 => 建议价: ¥${basePrice.toFixed(2)}`);
-          }
-          item.suggestedPrice = Math.round(basePrice * 100) / 100;
-        });
+        if (marketLowestPrice <= 0) {
+          console.warn(`[Inventory] Failed to get price for special goods ${group.name}, skipping all items`);
+          // 标记所有商品为跳过
+          items.forEach((item) => {
+            item.suggestedPrice = 0;
+          });
+        } else {
+          const suggestedPrice = Math.max(0.01, marketLowestPrice - 0.01);
+
+          items.forEach((item) => {
+            // 基础价格
+            let basePrice = suggestedPrice;
+            // 加上挂件价格的 70%
+            if (item.charms && item.charms.length > 0) {
+              const charmBonus = item.charms.reduce((sum, c) => sum + c.price * 0.7, 0);
+              basePrice = Math.max(0.01, basePrice + charmBonus);
+              console.log(`[Inventory] ${item.name} | 特殊商品 + 挂件加价 ¥${charmBonus.toFixed(2)} => 建议价: ¥${basePrice.toFixed(2)}`);
+            } else {
+              console.log(`[Inventory] ${item.name} | 特殊商品 => 建议价: ¥${basePrice.toFixed(2)}`);
+            }
+            item.suggestedPrice = Math.round(basePrice * 100) / 100;
+          });
+        }
       } else {
         // 普通商品：按磨损区间获取价格
         const wearRanges = new Map<string, WearRange>();
@@ -346,18 +355,23 @@ export default defineContentScript({
         // 打印磨损区间和对应的价格
         console.log('[Inventory] ========== 磨损区间价格 ==========');
         wearPrices.forEach((wp) => {
-          console.log(`[Inventory] 区间 [${wp.wearRange.min}, ${wp.wearRange.max}] => 市场最低价: ¥${wp.price.toFixed(2)} => 建议价: ¥${Math.max(0.01, wp.price - 0.01).toFixed(2)}`);
+          if (wp.price > 0) {
+            console.log(`[Inventory] 区间 [${wp.wearRange.min}, ${wp.wearRange.max}] => 市场最低价: ¥${wp.price.toFixed(2)} => 建议价: ¥${Math.max(0.01, wp.price - 0.01).toFixed(2)}`);
+          } else {
+            console.warn(`[Inventory] 区间 [${wp.wearRange.min}, ${wp.wearRange.max}] => 获取失败!`);
+          }
         });
         console.log('[Inventory] ==============================');
 
         // 构建磨损区间到价格的映射
         const priceMap = new Map<string, number>();
-        let defaultPrice = 0.01;
+        const failedRanges = new Set<string>();
         wearPrices.forEach((wp) => {
           const key = `${wp.wearRange.min}-${wp.wearRange.max}`;
-          priceMap.set(key, Math.max(0.01, wp.price - 0.01));
-          if (wp.price > 0 && defaultPrice === 0.01) {
-            defaultPrice = Math.max(0.01, wp.price - 0.01);
+          if (wp.price > 0) {
+            priceMap.set(key, Math.max(0.01, wp.price - 0.01));
+          } else {
+            failedRanges.add(key);
           }
         });
 
@@ -365,12 +379,20 @@ export default defineContentScript({
         console.log('[Inventory] ========== 商品价格分配 ==========');
         items.forEach((item) => {
           const wearValue = parseFloat(item.wear);
-          // 基础价格
-          let basePrice = defaultPrice;
+          let basePrice = 0;
+          let rangeKey = '';
+
           if (!isNaN(wearValue) && wearValue > 0) {
             const range = calculateWearRange(wearValue);
-            const key = `${range.min}-${range.max}`;
-            basePrice = priceMap.get(key) || defaultPrice;
+            rangeKey = `${range.min}-${range.max}`;
+            basePrice = priceMap.get(rangeKey) || 0;
+          }
+
+          // 如果无法获取价格，标记为跳过
+          if (basePrice <= 0) {
+            console.warn(`[Inventory] ${item.name} | 磨损: ${item.wear} | 区间: ${rangeKey} => 无法获取价格，跳过`);
+            item.suggestedPrice = 0;
+            return;
           }
 
           // 加上挂件价格的 70%
@@ -770,16 +792,27 @@ export default defineContentScript({
     /**
      * 上架单个商品组
      * 新逻辑：自动选中所有同名商品，不需要取消合并相同项
+     * 跳过被排除的商品和无法获取价格的商品
      */
     async function listGroup(detail: GroupDetail) {
-      console.log(`[Inventory] Listing group: ${detail.items[0]?.name}, ${detail.items.length} items`);
+      // 过滤出需要上架的商品（未被排除且有有效价格）
+      const validItems = detail.items.filter(
+        (item) => !item.excluded && item.suggestedPrice > 0
+      );
+
+      if (validItems.length === 0) {
+        console.log(`[Inventory] No valid items to list for group, skipping`);
+        return;
+      }
+
+      console.log(`[Inventory] Listing group: ${validItems[0]?.name}, ${validItems.length} items (${detail.items.length - validItems.length} excluded)`);
 
       // 1. 确保之前的弹窗已关闭，取消所有已选中商品
       await ensurePopupClosed();
 
-      // 2. 自动选中所有同名商品
+      // 2. 自动选中需要上架的商品
       // 滚动到第一个商品位置
-      const firstItem = detail.items[0];
+      const firstItem = validItems[0];
       const firstElement = document.querySelector(
         `li.my_inventory[data-assetid="${firstItem.assetId}"]`
       );
@@ -788,8 +821,8 @@ export default defineContentScript({
         await sleep(400);
       }
 
-      // 选中所有同名商品
-      for (const item of detail.items) {
+      // 选中需要上架的商品
+      for (const item of validItems) {
         const itemElement = document.querySelector(
           `li.my_inventory[data-assetid="${item.assetId}"]`
         );
@@ -815,8 +848,8 @@ export default defineContentScript({
       // 5. 注意：fold=false 时，不需要取消"合并相同项"
       // 因为商品本身就是展开的
 
-      // 6. 填写价格
-      await fillPrices(detail.items);
+      // 6. 填写价格（只填写有效商品的价格）
+      await fillPrices(validItems);
       await sleep(300);
 
       // 7. 点击上架按钮
@@ -832,7 +865,7 @@ export default defineContentScript({
         console.warn('[Inventory] Confirm button not found');
       }
 
-      console.log(`[Inventory] Listed ${detail.items.length} items`);
+      console.log(`[Inventory] Listed ${validItems.length} items`);
     }
 
     /**

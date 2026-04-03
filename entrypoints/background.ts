@@ -125,62 +125,100 @@ export default defineBackground(() => {
   }
 
   /**
-   * 获取特定磨损区间的价格
+   * 获取特定磨损区间的价格（带重试）
    */
-  async function fetchPriceForWearRange(tabId: number, goodsId: string, wearRange: WearRange): Promise<number> {
+  async function fetchPriceForWearRange(tabId: number, goodsId: string, wearRange: WearRange, maxRetries = 3): Promise<number> {
     // 构建带磨损参数的 URL
     const url = `https://buff.163.com/goods/${goodsId}#min_paintwear=${wearRange.min}&max_paintwear=${wearRange.max}`;
 
-    // 导航到新 URL
-    await browser.tabs.update(tabId, { url });
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      console.log(`[Background] Fetching price for wear ${wearRange.min}-${wearRange.max}, attempt ${attempt}/${maxRetries}`);
 
-    // 等待页面加载
-    await new Promise<void>((resolve) => {
-      const onUpdated = (tabId_: number, changeInfo: { status?: string }) => {
-        if (tabId_ === tabId && changeInfo.status === 'complete') {
+      // 导航到新 URL
+      await browser.tabs.update(tabId, { url });
+
+      // 等待页面加载
+      await new Promise<void>((resolve) => {
+        const onUpdated = (tabId_: number, changeInfo: { status?: string }) => {
+          if (tabId_ === tabId && changeInfo.status === 'complete') {
+            browser.tabs.onUpdated.removeListener(onUpdated);
+            resolve();
+          }
+        };
+        browser.tabs.onUpdated.addListener(onUpdated);
+
+        // 超时处理
+        setTimeout(() => {
           browser.tabs.onUpdated.removeListener(onUpdated);
           resolve();
-        }
-      };
-      browser.tabs.onUpdated.addListener(onUpdated);
-
-      // 超时处理
-      setTimeout(() => {
-        browser.tabs.onUpdated.removeListener(onUpdated);
-        resolve();
-      }, 10000);
-    });
-
-    // 等待页面更新
-    await new Promise(r => setTimeout(r, 500));
-
-    // 获取价格
-    try {
-      const response = await browser.tabs.sendMessage(tabId, {
-        type: MessageType.GET_MARKET_PRICE,
+        }, 10000);
       });
-      return response?.price || 0;
-    } catch (error) {
-      console.error('[Background] Failed to get price via message:', error);
+
+      // 等待页面更新和数据加载
+      await new Promise(r => setTimeout(r, 800 + attempt * 200)); // 每次重试增加等待时间
+
+      // 获取价格
+      try {
+        const response = await browser.tabs.sendMessage(tabId, {
+          type: MessageType.GET_MARKET_PRICE,
+        });
+
+        if (response?.price && response.price > 0) {
+          console.log(`[Background] Got price ${response.price} for wear ${wearRange.min}-${wearRange.max}`);
+          return response.price;
+        }
+      } catch (error) {
+        console.error('[Background] Failed to get price via message:', error);
+      }
 
       // 尝试直接通过 scripting 获取
       try {
         const results = await browser.scripting.executeScript({
           target: { tabId: tabId },
           func: () => {
+            // 尝试多种选择器
             const hideCnyEl = document.querySelector('.hide-cny .c_Gray');
             if (hideCnyEl?.textContent) {
               const cleaned = hideCnyEl.textContent.replace(/[^\d.]/g, '');
-              return parseFloat(cleaned) || 0;
+              const price = parseFloat(cleaned);
+              if (price > 0) return price;
             }
+
+            const fStrongEl = document.querySelector('#market-selling-list tr.selling .f_Strong');
+            if (fStrongEl?.textContent) {
+              const cleaned = fStrongEl.textContent.replace(/[^\d.]/g, '');
+              const price = parseFloat(cleaned);
+              if (price > 0) return price;
+            }
+
+            const firstRow = document.querySelector('#market-selling-list tr.selling');
+            if (firstRow) {
+              const strongEl = firstRow.querySelector('.f_Strong');
+              if (strongEl?.textContent) {
+                const cleaned = strongEl.textContent.replace(/[^\d.]/g, '');
+                const price = parseFloat(cleaned);
+                if (price > 0) return price;
+              }
+            }
+
             return 0;
           }
         });
-        return results?.[0]?.result || 0;
+
+        const price = results?.[0]?.result || 0;
+        if (price > 0) {
+          console.log(`[Background] Got price ${price} via scripting for wear ${wearRange.min}-${wearRange.max}`);
+          return price;
+        }
       } catch (e) {
-        return 0;
+        console.error('[Background] Scripting failed:', e);
       }
+
+      console.log(`[Background] Attempt ${attempt} failed, ${attempt < maxRetries ? 'retrying...' : 'giving up'}`);
     }
+
+    console.warn(`[Background] Failed to get price for wear ${wearRange.min}-${wearRange.max} after ${maxRetries} attempts`);
+    return 0;
   }
 
   /**

@@ -147,6 +147,7 @@ export default function App() {
     addGroupDetail,
     setGroupDetails,
     updateItemPrice,
+    toggleItemExcluded,
     setError,
     reset,
     clearGroupDetails,
@@ -322,11 +323,12 @@ export default function App() {
     });
   };
 
-  const totalItems = groupDetails.reduce((sum, d) => sum + (d.items?.length || 0), 0);
-  const totalValue = groupDetails.reduce(
-    (sum, d) => sum + (d.items || []).reduce((s, i) => s + (i.suggestedPrice || 0), 0),
-    0
+  // 计算总数时排除被排除的商品和无法获取价格的商品
+  const validItems = groupDetails.flatMap(d =>
+    (d.items || []).filter(i => !i.excluded && i.suggestedPrice > 0)
   );
+  const totalItems = validItems.length;
+  const totalValue = validItems.reduce((s, i) => s + (i.suggestedPrice || 0), 0);
 
   const handleGoToBuff = () => {
     browser.tabs.create({ url: 'https://buff.163.com/market/steam_inventory' });
@@ -504,7 +506,7 @@ export default function App() {
                         {isExpanded && (
                           <div className="wear-range-items">
                             {items.map((item) => (
-                              <div key={item.assetId} className="item-row">
+                              <div key={item.assetId} className={`item-row ${item.excluded ? 'excluded' : ''} ${item.suggestedPrice <= 0 ? 'no-price' : ''}`}>
                                 <div className="item-details">
                                   <p className="item-name">{item.name}</p>
                                   {!isSpecialGroup && (
@@ -522,13 +524,26 @@ export default function App() {
                                     </div>
                                   )}
                                 </div>
-                                <div className="item-pricing">
-                                  <PriceInput
-                                    value={item.suggestedPrice || 0.01}
-                                    onChange={(newPrice) => {
-                                      updateItemPrice(detail.group.goodsId, item.assetId, newPrice);
-                                    }}
-                                  />
+                                <div className="item-actions">
+                                  {/* 价格输入或无价格提示 */}
+                                  {item.suggestedPrice > 0 ? (
+                                    <PriceInput
+                                      value={item.suggestedPrice}
+                                      onChange={(newPrice) => {
+                                        updateItemPrice(detail.group.goodsId, item.assetId, newPrice);
+                                      }}
+                                    />
+                                  ) : (
+                                    <span className="no-price-label">无法获取价格</span>
+                                  )}
+                                  {/* 排除按钮 */}
+                                  <button
+                                    className={`btn-exclude ${item.excluded ? 'excluded' : ''}`}
+                                    onClick={() => toggleItemExcluded(detail.group.goodsId, item.assetId)}
+                                    title={item.excluded ? '取消排除' : '排除此商品'}
+                                  >
+                                    {item.excluded ? '✓' : '×'}
+                                  </button>
                                 </div>
                               </div>
                             ))}

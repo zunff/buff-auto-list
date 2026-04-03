@@ -66,6 +66,7 @@ export interface InventoryItem {
   image?: string; // 图片 URL（新增）
   isSpecial?: boolean; // 是否特殊商品（新增）
   charms?: Charm[]; // 挂件列表（新增）
+  excluded?: boolean; // 是否排除（不参与上架）
   quickPrice: number; // data-quick-price
   price: number; // .f_Strong 的价格
   suggestedPrice: number; // 计算后的建议价格（最低价-0.01）

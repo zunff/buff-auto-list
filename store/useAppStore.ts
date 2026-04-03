@@ -29,6 +29,7 @@ interface AppState {
   setGroupDetails: (details: GroupDetail[]) => void;
   updateItemPrice: (groupGoodsId: string, itemAssetId: string, newPrice: number) => void;
   updateGroupPrice: (groupGoodsId: string, newPrice: number) => void;
+  toggleItemExcluded: (groupGoodsId: string, itemAssetId: string) => void;
   toggleSelectedItem: (assetId: string) => void;
   setSelectedItems: (items: Set<string>) => void;
   setError: (error: string | null) => void;
@@ -109,6 +110,21 @@ export const useAppStore = create<AppState>()(
                     ...item,
                     suggestedPrice: newPrice,
                   })),
+                }
+              : detail
+          ),
+        })),
+      toggleItemExcluded: (groupGoodsId, itemAssetId) =>
+        set((state) => ({
+          groupDetails: state.groupDetails.map((detail) =>
+            detail.group.goodsId === groupGoodsId
+              ? {
+                  ...detail,
+                  items: detail.items.map((item) =>
+                    item.assetId === itemAssetId
+                      ? { ...item, excluded: !item.excluded }
+                      : item
+                  ),
                 }
               : detail
           ),
